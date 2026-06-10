@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+import sys
+import json
+
+def main():
+    user_input = sys.stdin.read().strip()
+    if not user_input:
+        return
+
+    event = {
+        "type": "message",
+        "source": "user",
+        "payload": {
+            "text": user_input
+        }
+    }
+    
+    print(json.dumps(event))
+
+if __name__ == "__main__":
+    main()
