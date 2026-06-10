@@ -4,20 +4,23 @@ STATE_FILE="history.jsonl"
 
 # Initialize with a system prompt if the file is empty
 if [ ! -f $STATE_FILE ]; then
-    echo '{"type": "message", "source": "system", "payload": {"text": ""}}' > $STATE_FILE
+    echo "TODO" > /dev/null
+    #echo '{"type": "message", "source": "system", "payload": {"text": "."}}' > $STATE_FILE
 fi
 
 # 1. Format user input using prompt-build and append to state
 echo "$1" | ./prompt >> $STATE_FILE
 
 while true; do
-    # 2. Reconstruct context -> Invoke LLM -> Tee real-time stream to log and a temp file
-    cat $STATE_FILE | ./compact | ./invoke | tee -a $STATE_FILE > latest_stream.jsonl
+    # 2. The Active Streaming Pipeline
+    # - `tee -a $STATE_FILE` safely appends the raw JSONL events to our database
+    # - `tee latest_stream.jsonl` captures the current turn so we can check for tool calls
+    # - `./llm-extract` sits at the end of the pipe, actively consuming and printing tokens to your screen in real time
+    cat $STATE_FILE | ./compact | ./invoke | tee -a $STATE_FILE | tee latest_stream.jsonl | ./extract
     
     # 3. Check if the model emitted any tool calls inside this stream chunk
     HAS_TOOL=$(cat latest_stream.jsonl | jq -r 'select(.type == "tool_call") | .type' | head -n 1)
     
-    # 4. Normal generation completed. Extract text for the user and exit.
-    cat latest_stream.jsonl | ./extract
+    # 4. Normal generation completed. llm-extract already printed it above.
     break
 done
