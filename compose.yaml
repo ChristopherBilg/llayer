@@ -2,6 +2,8 @@ services:
   ollama:
     image: ollama/ollama
     volumes:
-      - ./ollama:/root/.ollama
+      - ./.ollama:/root/.ollama
     ports:
       - "${PORT:-11434}:11434"
+    post_start:
+      - command: ollama pull llama3.2:1b
