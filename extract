@@ -1,27 +1,34 @@
 #!/bin/sh
 set -euo pipefail
 
-# Require jq for JSON encoding
-if ! command -v jq >/dev/null 2>&1; then
-  printf '%s\n' "error: jq is required but not installed" >&2
-  exit 1
-fi
+usage() {
+    cat <<'EOF' >&2
+Usage: extract [--all]
 
-# Simple extractor: reads newline-delimited JSON events and writes assistant output.
-# - token events: append text (no newline)
-# - message_complete events: write a newline
-# - fallback: message events from assistant -> print payload.text with newline
+Options:
+  --all       Emit message events from all sources
+  -h, --help  Show this help
+EOF
+}
 
-# Uses jq in raw-join mode so token strings are concatenated exactly as received.
-jq --unbuffered -R -r -j '
+ALL=false
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --all) ALL=true; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown option: $1" >&2; usage; exit 2 ;;
+    esac
+done
+
+jq --unbuffered -R -r -j --arg all "$ALL" '
     select(length > 0) |
     try fromjson catch null |
     select(. != null) |
-    if .type == "token" and .source == "assistant" then
+    if .type == "token" and ($all == "true" or .source == "assistant") then
         .payload.text
     elif .type == "message_complete" then
         "\n"
-    elif .type == "message" and .source == "assistant" then
+    elif .type == "message" and ($all == "true" or .source == "assistant") then
         .payload.text, "\n"
     else
         empty

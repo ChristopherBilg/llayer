@@ -1,79 +1,46 @@
 #!/bin/sh
 set -euo pipefail
 
-# Require jq for JSON encoding
-if ! command -v jq >/dev/null 2>&1; then
-  printf '%s\n' "error: jq is required but not installed" >&2
-  exit 1
-fi
-
-# Stream messages to Ollama API via curl and emit token events as newline-delimited JSON.
-# Reads a JSON array of messages from stdin, sends to Ollama, and streams token responses.
-
+HOST="localhost"
+PORT="11434"
+MODEL_ENDPOINT="http://${HOST}:${PORT}/api/chat"
 MODEL_NAME="llama3.2:1b"
 
-# Parse command-line arguments
-OLLAMA_HOST="${OLLAMA_HOST:-localhost}"
-OLLAMA_PORT="${OLLAMA_PORT:-11434}"
-OLLAMA_URL=""
-
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --host)
-      OLLAMA_HOST="$2"
-      shift 2
-      ;;
-    --port)
-      OLLAMA_PORT="$2"
-      shift 2
-      ;;
-    --url)
-      OLLAMA_URL="$2"
-      shift 2
-      ;;
-    *)
-      echo "Usage: invoke [--host HOST] [--port PORT] [--url URL]" >&2
-      exit 1
-      ;;
-  esac
-done
-
-# Use provided URL or construct from host/port
-OLLAMA_URL="${OLLAMA_URL:-http://${OLLAMA_HOST}:${OLLAMA_PORT}/api/chat}"
-
-# Read messages array from stdin
-MESSAGES_JSON=$(cat)
-
-if [ -z "$MESSAGES_JSON" ]; then
-  exit 0
+# Read messages from stdin
+MESSAGES_JSON=$(cat) || { printf '%s\n' "error: failed to read stdin" >&2; exit 1; }
+if [ -z "$(printf '%s' "$MESSAGES_JSON" | tr -d '[:space:]')" ]; then
+exit 0
 fi
 
-# Build payload using jq: combines messages with model and stream settings
-# First sanitize control characters (U+0000..U+001F) by escaping them as \uXXXX
-# This prevents jq from failing on unescaped control characters inside strings.
-PAYLOAD=$(printf '%s' "$MESSAGES_JSON" | jq --arg model "$MODEL_NAME" '{
-  model: $model,
-  messages: .,
-  stream: true
-}' 2>&1) || {
-  echo "Pipeline Error: jq parsing failed." >&2
-  echo "Sanitized input was: $SANITIZED" >&2
-  echo "Error: $PAYLOAD" >&2
-  exit 1
+# Build payload JSON, with tools specifications iff `--tools` flag enabled
+TOOLS_JSON="[]"
+if [ "${1:-}" = "--tools" ]; then
+  TOOLS_JSON=$(cat tools.json) || { printf '%s\n' "error: failed to read tools.json" >&2; exit 1; }
+fi
+PAYLOAD=$(printf '%s' "$MESSAGES_JSON" | jq -c --arg model "$MODEL_NAME" --argjson tools "$TOOLS_JSON" '
+{
+    model: $model,
+    messages: .,
+    stream: true,
+    tools: $tools
 }
+') || { printf '%s\n' "error: invalid JSON input" >&2; exit 1; }
 
-# Stream response from Ollama API using curl with no buffering (-N)
-# Parse each JSON line: emit token events, then completion event when done
-curl -s -N -X POST "$OLLAMA_URL" \
-  -H "Content-Type: application/json" \
-  -d "$PAYLOAD" | \
-# Use a single unbuffered jq invocation so output is emitted as soon as each
-# JSON line arrives (prevents buffering between multiple jq calls).
-jq --unbuffered -R -c 'select(length > 0) | fromjson |
-  if .message.content then
-    {type: "token", source: "assistant", payload: {text: .message.content}}
-  elif .done then
-    {type: "message_complete", source: "system", payload: {}}
-  else
+# Send to model and stream parsed events
+curl -sS -N -X POST "$MODEL_ENDPOINT" \
+-H "Content-Type: application/json" \
+-d "$PAYLOAD" | \
+jq --unbuffered -R -c '
+select(length > 0) | fromjson? |
+if .message.tool_calls then
+    .message.tool_calls[] | {type: "tool_call", source: "assistant", payload: .function}
+elif .message.content then
+    if .done == true then
+        {type: "message_complete", source: "system", payload: {}}
+    else
+        {type: "token", source: "assistant", payload: {text: .message.content}}
+    end
+else
     empty
-  end'
+end
+'

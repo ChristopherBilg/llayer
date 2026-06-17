@@ -1,0 +1,48 @@
+#!/bin/bash
+set -euo pipefail
+
+list_directory() {
+  local line="$1"
+  local target_path
+
+  target_path=$(printf '%s' "$line" | jq -r '.path // "."')
+  if [ -z "$target_path" ]; then
+    target_path='.'
+  fi
+
+  if list_output=$(ls -1 -- "$target_path" 2>&1); then
+    printf 'Contents of %s:\n%s' "$target_path" "$list_output"
+  else
+    printf 'Error reading directory %s: %s' "$target_path" "$list_output"
+  fi
+}
+
+dispatch() {
+  local tool_name="$1"
+  local tool_arguments="$2"
+
+  case "$tool_name" in
+    list_directory)
+      list_directory "$tool_arguments"
+      ;;
+    *)
+      printf 'Unknown tool: %s\n' "$tool_name" >&2
+      return 1
+      ;;
+  esac
+}
+
+tool_calls=0
+while IFS=$'\t' read -r tool_name tool_arguments; do
+    if ! result=$(dispatch "$tool_name" "$tool_arguments"); then
+        continue
+    fi
+
+    tool_calls=$((tool_calls + 1))
+    printf '%s\n' "$(
+        jq -nc --arg tool_name "$tool_name" --arg text "$result" \
+          '{type: "tool_result", source: "tool", payload: {tool_name: $tool_name, text: $text}}'
+    )"
+done < <(jq -r -s 'map(select(.type == "tool_call"))[] | [.payload.name, (.payload.arguments | @json)] | @tsv')
+
+exit "$tool_calls"

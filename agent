@@ -2,6 +2,7 @@
 set -euo pipefail
 
 HISTORY_FILE=".llayer_history"
+LATEST_FILE=".llayer_latest"
 
 if [ ! -f "$HISTORY_FILE" ]; then
     touch "$HISTORY_FILE"
@@ -12,15 +13,25 @@ while true; do
     if [ -z "$line" ]; then
         continue
     fi
+    USE_TOOLS=false
     case "$line" in
         exit|quit)
-            echo "Goodbye."
+            printf "Goodbye.\n"
             break
+            ;;
+        /tools*)
+            USE_TOOLS=true
+            line="${line#/tools }"
             ;;
     esac
 
-    echo "$line" | ./prompt >> "$HISTORY_FILE"
+    printf '%s\n' "$line" | ./prompt >> "$HISTORY_FILE"
 
-    cat "$HISTORY_FILE" | ./compact | ./invoke | tee -a "$HISTORY_FILE" | ./extract
+    DECIDE_ARGS=""
+    [ "$USE_TOOLS" = true ] && DECIDE_ARGS="--tools"
+    cat "$HISTORY_FILE" | ./compact | ./invoke $DECIDE_ARGS | tee -a "$HISTORY_FILE" | tee "$LATEST_FILE" | ./extract
 
+    until cat "$LATEST_FILE" | ./dispatch >> "$HISTORY_FILE"; do
+        cat "$HISTORY_FILE" | ./compact | ./invoke | tee -a "$HISTORY_FILE" | tee "$LATEST_FILE" | ./extract
+    done
 done

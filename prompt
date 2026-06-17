@@ -1,10 +1,10 @@
 #!/bin/sh
-set -eu
+set -euo pipefail
 
-# Require jq for JSON encoding
-if ! command -v jq >/dev/null 2>&1; then
-  printf '%s\n' "error: jq is required but not installed" >&2
-  exit 1
+# Set the `source` of a generated message
+SOURCE="user"
+if [ "${1:-}" = "--system" ]; then
+  SOURCE="system"
 fi
 
 input=$(cat)
@@ -13,5 +13,4 @@ if [ -z "$input" ]; then
   exit 0
 fi
 
-# Use jq to safely produce JSON with proper escaping
-printf '%s' "$input" | jq -c -Rs '{type: "message", source: "user", payload: {text: .}}'
+printf '%s' "$input" | jq -c -Rs --arg source "$SOURCE" '{type: "message", source: $source, payload: {text: .}}'

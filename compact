@@ -1,73 +1,103 @@
 #!/bin/sh
 set -euo pipefail
 
-# Require jq for JSON encoding
-if ! command -v jq >/dev/null 2>&1; then
-  printf '%s\n' "error: jq is required but not installed" >&2
-  exit 1
-fi
+WINDOW_SIZE="10"
 
-# Convert newline-delimited JSON events from stdin into a compact message array.
-# Demonstrates three separate jq passes chained via pipes: parsing, reconstruction, and normalization.
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --window)
+      if [ "$#" -lt 2 ]; then
+        printf '%s\n' "error: --window requires a value" >&2
+        exit 1
+      fi
+      WINDOW_SIZE="$2"
+      shift 2
+      ;;
+    --window=*)
+      WINDOW_SIZE="${1#*=}"
+      shift
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
-# PASS 1: Parse raw input lines into JSON events
-# jq -R reads raw text lines, -s slurps all into one string, then split into lines
-# Filter out empty lines and invalid JSON, pipe to next pass
+# Process JSONL input
 jq -R -s '
-  split("\n")
-  | map(select(length > 0))
-  | map(try fromjson catch null)
-  | map(select(. != null))
+    split("\n")
+    | map(select(length > 0))
+    | map(try fromjson catch null)
+    | map(select(. != null))
 ' | \
-# PASS 2: Reconstruct assistant messages from token stream
-# jq reduce accumulates state: token_buffer and reconstructed events array
-# Handles message/tool_call/tool_result events and reconstructs text from tokens
+
+# Reconstruct messages from token stream. Maintain a token buffer while streaming assistant tokens and emit a message
+# after `message_complete` event is seen (or at the end).
 jq -c '
-  reduce .[] as $event (
-    {reconstructed: [], token_buffer: ""};
-    if ($event.type == "message" or $event.type == "tool_call" or $event.type == "tool_result") then
-      .reconstructed += [$event]
-    elif ($event.type == "token" and $event.source == "assistant") then
-      .token_buffer += ($event.payload.text // "")
-    elif $event.type == "message_complete" then
-      if .token_buffer != "" then
-        .reconstructed += [{
-          type: "message",
-          source: "assistant",
-          payload: {text: .token_buffer}
-        }] |
-        .token_buffer = ""
+    reduce .[] as $event (
+        {reconstructed: [], token_buffer: ""};
+        if ($event.type == "message" or $event.type == "tool_call" or $event.type == "tool_result") then
+            .reconstructed += [$event]
+        elif ($event.type == "token" and $event.source == "assistant") then
+            .token_buffer += ($event.payload.text // "")
+        elif $event.type == "message_complete" then
+            if .token_buffer != "" then
+                .reconstructed += [{
+                    type: "message",
+                    source: "assistant",
+                    payload: {text: .token_buffer}
+                }] |
+                .token_buffer = ""
+            else
+                .
+            end
+        else
+            .
+        end
+    )
+    # If there are leftover tokens, flush them as a final assistant message
+    | if .token_buffer != "" then
+            .reconstructed += [{
+                type: "message",
+                source: "assistant",
+                payload: {text: .token_buffer}
+            }]
       else
-        .
+            .
       end
-    else
-      .
-    end
-  )
-  | if .token_buffer != "" then
-      .reconstructed += [{
-        type: "message",
-        source: "assistant",
-        payload: {text: .token_buffer}
-      }]
-    else
-      .
-    end
-  | .reconstructed
+    | .reconstructed
 ' | \
-# PASS 3: Select relevant events and normalize to OpenAI message format
-# Filter system events (all), then recent events (last 10 non-system)
-# Map each event to {role, content} format
-jq -c '
-  (
-    map(select(.source == "system" and .type == "message")) as $system_events |
-    (map(select(.source != "system")) | .[-10:]) as $recent_events |
-    ($system_events + $recent_events)
-  )
-  | map(
-      {
-        role: (if (.source | IN("assistant", "user", "system")) then .source else "user" end),
-        content: (.payload.text // tostring)
-      }
+
+# Select system messages (all) plus the last K non-system messages, then normalize each event as per chat format
+jq -c --argjson window_size "$WINDOW_SIZE" '
+    (
+        map(select(.source == "system" and .type == "message")) as $system_events |
+        (if $window_size == 0 then [] else map(select(.source != "system")) | .[-$window_size:] end) as $recent_events |
+        ($system_events + $recent_events)
+    )
+    | map(if .type == "tool_call" then
+            {
+                role: "assistant",
+                tool_calls: [{
+                    type: "function",
+                    function: {
+                        index: .payload.index,
+                        name: .payload.name,
+                        arguments: .payload.arguments
+                    }
+                }]
+            }
+          elif .type == "tool_result" then
+            {
+                role: "tool",
+                content: (.payload.text // (.payload.result | tostring) // (.payload | tostring)),
+                tool_name: (.payload.tool_name // .payload.name // "unknown_tool")
+            }
+          else
+            {
+                role: (if (.source | IN("assistant", "user", "system")) then .source else "user" end),
+                content: (.payload.text // tostring)
+            }
+          end
     )
 '
