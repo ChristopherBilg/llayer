@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 HISTORY_FILE=".llayer_history"
 LATEST_FILE=".llayer_latest"
 
@@ -25,13 +26,13 @@ while true; do
             ;;
     esac
 
-    printf '%s\n' "$line" | ./ll-read >> "$HISTORY_FILE"
+    printf '%s\n' "$line" | "$DIR/ll-read" >> "$HISTORY_FILE"
 
     ENABLE_TOOLS=""
     [ "$USE_TOOLS" = true ] && ENABLE_TOOLS="--tools"
-    cat "$HISTORY_FILE" | ./ll-context | ./ll-eval $ENABLE_TOOLS | tee -a "$HISTORY_FILE" | tee "$LATEST_FILE" | ./ll-print
+    cat "$HISTORY_FILE" | "$DIR/ll-context" | "$DIR/ll-eval" $ENABLE_TOOLS | tee -a "$HISTORY_FILE" | tee "$LATEST_FILE" | "$DIR/ll-print"
 
-    until cat "$LATEST_FILE" | ./ll-dispatch >> "$HISTORY_FILE"; do
-        cat "$HISTORY_FILE" | ./ll-context | ./ll-eval --tools | tee -a "$HISTORY_FILE" | tee "$LATEST_FILE" | ./ll-print
+    until cat "$LATEST_FILE" | "$DIR/ll-dispatch" >> "$HISTORY_FILE"; do
+        cat "$HISTORY_FILE" | "$DIR/ll-context" | "$DIR/ll-eval" --tools | tee -a "$HISTORY_FILE" | tee "$LATEST_FILE" | "$DIR/ll-print"
     done
 done
