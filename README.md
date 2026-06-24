@@ -103,6 +103,12 @@ Caling specific components of the agent is straightforward. Examples include ins
 (cat .llayer_history && echo "Print some digits of PI" | ./ll-read) | ./ll-context | jq -c '.[]'
 ```
 
+Or seeding the agent with a system prompt:
+
+```shell
+(echo "You are Super Mario, act like it" | ./ll-read --system > .llayer_history) && ./agent 
+```
+
 Or replaying agent messages from history:
 
 ```shell
